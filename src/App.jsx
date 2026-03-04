@@ -1,7 +1,21 @@
 import { useState, useEffect, useRef } from "react";
 import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, Cell } from "recharts";
+import { initializeApp } from "firebase/app";
+import { getFirestore, doc, onSnapshot, setDoc } from "firebase/firestore";
 
-const STORAGE_KEY = "hogar_santi_lizeth_v2";
+// ✅ TUS CREDENCIALES DE FIREBASE
+const firebaseConfig = {
+  apiKey: "AIzaSyAevdHClbY3S4BxkUz95jrilcHahlhW_FY",
+  authDomain: "gastos-hogar-250b6.firebaseapp.com",
+  projectId: "gastos-hogar-250b6",
+  storageBucket: "gastos-hogar-250b6.firebasestorage.app",
+  messagingSenderId: "1031065732824",
+  appId: "1:1031065732824:web:3c3cc268ca3237658279ad",
+};
+
+const firebaseApp = initializeApp(firebaseConfig);
+const db = getFirestore(firebaseApp);
+const DOC_REF = doc(db, "hogares", "santi-lizeth");
 
 const CATEGORIES = [
   { id: "arriendo", label: "Arriendo", emoji: "🏠", color: "#FF6B6B" },
@@ -31,17 +45,6 @@ const MOTIVATIONAL = [
   "🎯 ¡Van por buen camino este mes!",
   "✨ La disciplina financiera es amor en acción",
 ];
-
-function loadData() {
-  try {
-    const raw = localStorage.getItem(STORAGE_KEY);
-    return raw ? JSON.parse(raw) : {};
-  } catch { return {}; }
-}
-
-function saveData(data) {
-  localStorage.setItem(STORAGE_KEY, JSON.stringify(data));
-}
 
 const styles = `
   @import url('https://fonts.googleapis.com/css2?family=Playfair+Display:wght@600;700&family=DM+Sans:wght@300;400;500;600&display=swap');
@@ -251,24 +254,61 @@ const styles = `
   ::-webkit-scrollbar { width: 4px; }
   ::-webkit-scrollbar-track { background: transparent; }
   ::-webkit-scrollbar-thumb { background: var(--border); border-radius: 4px; }
+  .sync-indicator {
+    display: inline-flex; align-items: center; gap: 6px;
+    font-size: 11px; color: var(--muted); padding: 4px 10px;
+    background: var(--surface2); border-radius: 100px;
+  }
+  .sync-dot {
+    width: 6px; height: 6px; border-radius: 50%;
+    background: var(--mint); animation: pulse 2s infinite;
+  }
 `;
 
 export default function App() {
-  const [data, setData] = useState(loadData);
+  const [data, setData] = useState({});
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
   const [selectedMonth, setSelectedMonth] = useState(currentMonth());
   const [tab, setTab] = useState("dashboard");
   const [showAdd, setShowAdd] = useState(false);
   const [darkMode, setDarkMode] = useState(true);
-  const [form, setForm] = useState({ amount: "", category: "mercado", desc: "", who: "santiago", date: new Date().toISOString().slice(0, 10) });
+  const [form, setForm] = useState({
+    amount: "", category: "mercado", desc: "", who: "santiago",
+    date: new Date().toISOString().slice(0, 10),
+  });
   const [editMeta, setEditMeta] = useState(false);
   const [photoModal, setPhotoModal] = useState(null);
   const fileRef = useRef();
   const motivational = MOTIVATIONAL[Math.floor(Math.random() * MOTIVATIONAL.length)];
+  const saveTimeout = useRef(null);
 
-  useEffect(() => { saveData(data); }, [data]);
+  // ✅ Escuchar cambios en tiempo real desde Firebase
+  useEffect(() => {
+    const unsub = onSnapshot(DOC_REF, (snap) => {
+      if (snap.exists()) {
+        setData(snap.data());
+      }
+      setLoading(false);
+    });
+    return () => unsub();
+  }, []);
+
+  // ✅ Guardar en Firebase con debounce (espera 800ms tras el último cambio)
+  const saveToFirebase = (newData) => {
+    setSaving(true);
+    if (saveTimeout.current) clearTimeout(saveTimeout.current);
+    saveTimeout.current = setTimeout(async () => {
+      try {
+        await setDoc(DOC_REF, newData);
+      } catch (e) {
+        console.error("Error guardando:", e);
+      }
+      setSaving(false);
+    }, 800);
+  };
 
   const monthData = data[selectedMonth] || { expenses: [], meta: "", savingsGoal: 0, notes: {} };
-
   const expenses = monthData.expenses || [];
   const totalGastado = expenses.reduce((s, e) => s + e.amount, 0);
   const saldo = TOTAL_APORTE - totalGastado;
@@ -301,10 +341,11 @@ export default function App() {
   const months = [...new Set(Object.keys(data).concat(currentMonth()))].sort().reverse();
 
   function updateMonth(updater) {
-    setData(prev => {
-      const m = prev[selectedMonth] || { expenses: [], meta: "", savingsGoal: 0, notes: {} };
-      return { ...prev, [selectedMonth]: updater(m) };
-    });
+    const m = data[selectedMonth] || { expenses: [], meta: "", savingsGoal: 0, notes: {} };
+    const updated = updater(m);
+    const newData = { ...data, [selectedMonth]: updated };
+    setData(newData);
+    saveToFirebase(newData);
   }
 
   function addExpense() {
@@ -345,6 +386,18 @@ export default function App() {
     return new Date(Number(y), Number(mo) - 1).toLocaleString("es-CO", { month: "long", year: "numeric" });
   };
 
+  if (loading) {
+    return (
+      <>
+        <style>{styles}</style>
+        <div style={{ minHeight: "100vh", background: "var(--bg)", display: "flex", alignItems: "center", justifyContent: "center", flexDirection: "column", gap: 16 }}>
+          <div style={{ fontSize: 40 }}>🏡</div>
+          <div style={{ color: "var(--muted)", fontFamily: "var(--font-body)" }}>Cargando datos del hogar...</div>
+        </div>
+      </>
+    );
+  }
+
   return (
     <>
       <style>{styles}</style>
@@ -356,7 +409,13 @@ export default function App() {
               <div style={{ fontFamily: "var(--font-display)", fontSize: 20, fontWeight: 700, background: "linear-gradient(135deg, var(--mint), var(--gold))", WebkitBackgroundClip: "text", WebkitTextFillColor: "transparent" }}>
                 🏡 Nuestro Hogar
               </div>
-              <div style={{ fontSize: 12, color: "var(--muted)", marginTop: 2 }}>Santiago & Lizeth</div>
+              <div style={{ fontSize: 12, color: "var(--muted)", marginTop: 2, display: "flex", alignItems: "center", gap: 6 }}>
+                Santiago & Lizeth
+                <span className="sync-indicator">
+                  <span className="sync-dot" />
+                  {saving ? "Guardando..." : "En vivo"}
+                </span>
+              </div>
             </div>
             <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
               <select value={selectedMonth} onChange={e => setSelectedMonth(e.target.value)} style={{ width: "auto", fontSize: 13, padding: "6px 10px" }}>
@@ -518,7 +577,6 @@ export default function App() {
                 )}
               </div>
 
-              {/* Monthly Summary */}
               <div className="card" style={{ background: "linear-gradient(135deg, rgba(0,201,167,0.05), rgba(255,209,102,0.05))" }}>
                 <div style={{ fontWeight: 600, marginBottom: 16 }}>📅 Resumen del mes</div>
                 <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
@@ -541,13 +599,12 @@ export default function App() {
           {/* Expenses Tab */}
           {tab === "expenses" && (
             <div>
-              {/* Recurring */}
               <div className="card" style={{ marginBottom: 16 }}>
                 <div style={{ fontWeight: 600, marginBottom: 12, fontSize: 14 }}>📌 Gastos fijos del mes</div>
                 <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
                   {[
-                    { label: "Arriendo", cat: "arriendo", amount: 0 },
-                    { label: "Internet", cat: "internet", amount: 0 },
+                    { label: "Arriendo", cat: "arriendo" },
+                    { label: "Internet", cat: "internet" },
                   ].map(r => {
                     const exists = expenses.some(e => e.category === r.cat && e.desc?.toLowerCase().includes("fijo"));
                     return (
@@ -603,7 +660,7 @@ export default function App() {
             </div>
           )}
 
-          {/* Savings/Goals Tab */}
+          {/* Savings Tab */}
           {tab === "savings" && (
             <div>
               <div className="card" style={{ marginBottom: 16 }}>
